@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>three.js webgl - volume rendering example</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <link type="text/css" rel="stylesheet" href="main.css">
+</head>
+<body>
+<div id="info">
+    <p>
+        <a id='titleLink' href="https://threejs.org" target="_blank" rel="noopener">three.js</a>
+        - Float volume render test (mip / isosurface)
+    </p>
+</div>
+<div id="inset"></div>
+<script src="scoreoutputer.min.js"></script>
+<script>
+    // 建構子 ScoreOutputer 接受一個字串，該字串為 csv 的檔案名稱
+    // 以下面範例，檔名就為 "109598105(總分: 6).csv"
+    var so = new ScoreOutputer("110598045");
+    so.installCSS(function () {
+        so.addChild("透過模型分割出心臟，輸出心臟遮罩圖片", 6, true);
+        so.addChild("心臟遮罩圖片轉成nrrd檔案 ", 1, true);
+        so.addChild("使用Three.js呈現模型", 1, true);
+        so.addChild("呈現真實(Ground Truth)與預測的模型", 2, false);
+
+        //產生自評表，參數如下所示
+        so.renderModal(
+            document.body,
+            "rgba(100,45,58,1)",
+            "white",
+            "15pt",
+            "15px",
+            (dialogTitle = "自我評分表")
+        );
+
+        //設定下載按鈕 <-- 一定要呼叫這個函數，不然沒有下載功能
+        so.installDownloadBtn();
+
+        //產生 "開啟自評表按鈕"
+        so.renderBtn(
+            //自評表按鈕插入位置
+            document.querySelector("#info"),
+            "開啟自評表"
+        );
+    });
+</script>
+<script type="module">
+    import * as THREE from './three/build/three.module.js';
+    import {OrbitControls} from './three/examples/jsm/controls/OrbitControls.js';
+    import {NRRDLoader} from './three/examples/jsm/loaders/NRRDLoader.js';
+    import {VolumeRenderShader1} from './three/examples/jsm/shaders/VolumeShader.js';
+
+    let renderer, scene, camera, controls, material, volconfig, cmtextures;
+
+    let modelPath = './data/nrrd_data/ID00423637202312137826377_gt_mask.nrrd';
+
+    volconfig = {clim1: 0, clim2: 1, renderstyle: 'iso', isothreshold: 0.15, colormap: 'red'};
+
+    init();
+
+    function init() {
+        scene = new THREE.Scene();
+
+        createCamera();
+
+        createRender();
+
+        createControl();
+
+        // Load the data ...
+        loadNRRD(modelPath);
+
+        window.addEventListener('resize', onWindowResize);
+    }
+
+    function createCamera() {
+        // Create camera (The volume renderer does not work very well with perspective yet)
+        const h = 512; // frustum height
+        const aspect = window.innerWidth / window.innerHeight;
+        camera = new THREE.OrthographicCamera(-h * aspect / 2, h * aspect / 2, h / 2, -h / 2, 1, 1000);
+        camera.position.set(64, -64, 128);
+        camera.up.set(0, 0, 1); // In our data, z is up
+    }
+
+    function createRender() {
+        // Create renderer
+        renderer = new THREE.WebGLRenderer();
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+    }
+
+    function createControl() {
+        // Create controls
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.addEventListener('change', render);
+        controls.target.set(64, 64, 128);
+        controls.minZoom = 0.5;
+        controls.maxZoom = 4;
+        controls.update();
+    }
+
+    function loadNRRD(modelPath) {
+        new NRRDLoader().load(modelPath, function (volume) {
+            const texture = new THREE.DataTexture3D(volume.data, volume.xLength, volume.yLength, volume.zLength);
+            texture.format = THREE.RedFormat;
+            texture.type = THREE.FloatType;
+            texture.minFilter = texture.magFilter = THREE.LinearFilter;
+            texture.unpackAlignment = 1;
+
+            // Colormap textures
+            cmtextures = {
+                red: new THREE.TextureLoader().load('./three/examples/textures/red.png', render)
+            };
+
+            // Material
+            const shader = VolumeRenderShader1;
+
+            const uniforms = THREE.UniformsUtils.clone(shader.uniforms);
+
+            uniforms["u_data"].value = texture;
+            uniforms["u_size"].value.set(volume.xLength, volume.yLength, volume.zLength);
+            uniforms["u_clim"].value.set(volconfig.clim1, volconfig.clim2);
+            uniforms["u_renderstyle"].value = 1; // 1: ISO
+            uniforms["u_renderthreshold"].value = volconfig.isothreshold; // For ISO renderstyle
+            uniforms["u_cmdata"].value = cmtextures[volconfig.colormap];
+
+            material = new THREE.ShaderMaterial({
+                uniforms: uniforms,
+                vertexShader: shader.vertexShader,
+                fragmentShader: shader.fragmentShader,
+                side: THREE.BackSide // The volume shader uses the backface as its "reference point"
+            });
+
+            // THREE.Mesh
+            const geometry = new THREE.BoxGeometry(volume.xLength, volume.yLength, volume.zLength);
+            geometry.translate(volume.xLength / 2 - 0.5, volume.yLength / 2 - 0.5, volume.zLength / 2 - 0.5);
+
+            const mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+
+            render();
+        });
+    }
+
+    function updateUniforms() {
+        material.uniforms["u_clim"].value.set(volconfig.clim1, volconfig.clim2);
+        material.uniforms["u_renderstyle"].value = 1; // 1: ISO
+        material.uniforms["u_renderthreshold"].value = volconfig.isothreshold; // For ISO renderstyle
+        material.uniforms["u_cmdata"].value = cmtextures[volconfig.colormap];
+        render();
+    }
+
+    function onWindowResize() {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        const aspect = window.innerWidth / window.innerHeight;
+        const frustumHeight = camera.top - camera.bottom;
+        camera.left = -frustumHeight * aspect / 2;
+        camera.right = frustumHeight * aspect / 2;
+        camera.updateProjectionMatrix();
+        render();
+    }
+
+    function render() {
+        renderer.render(scene, camera);
+    }
+
+</script>
+</body>
+</html>

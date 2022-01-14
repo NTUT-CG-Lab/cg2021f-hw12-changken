@@ -1,0 +1,14 @@
+### My template
+
+# IntelliJ project files
+.idea
+*.iml
+out
+gen
+
+# Jupyter notebook
+.ipynb_checkpoints
+
+# model
+model
+
